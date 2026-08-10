@@ -11,6 +11,22 @@
 
 ---
 
+## Screenshots 📱
+
+<p align="center">
+  <img src="src/assets/Main%20screen.png" width="30%" alt="Main Map View" />
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="src/assets/Stats.png" width="30%" alt="Statistics & Device Info" />
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="src/assets/Options.png" width="30%" alt="Settings & Map Downloader" />
+</p>
+
+<p align="center">
+  <b>Left:</b> Interactive Map & Live Tracking | <b>Center:</b> Live Statistics & Device Info | <b>Right:</b> App Settings & Map Downloader
+</p>
+
+---
+
 ## Key Features ✨
 
 * 🗺️ **Online & Offline Navigation:** Interactive map viewer supporting online Google Maps / OpenStreetMap raster tiles, custom region downloads, and full local tile caching for off-grid hiking.
@@ -31,8 +47,10 @@
 org.walkertracker/
 ├── src/
 │   ├── main.py          # Main application logic, UI views, sensor fusion, & WMM2025 model
-│   └── locales.py       # English and Greek translation dictionaries & Translator helper
-├── build/               # Compiled Android APK outputs
+│   ├── tile_server.py   # Local HTTP tile server for offline maps
+│   ├── downloader.py    # Tile downloader engine
+│   ├── locales.py       # English and Greek translation dictionaries
+│   └── assets/          # App icon, splash image, and UI screenshots
 ├── pyproject.toml       # Dependencies, app metadata, and build configuration
 ├── PRIVACY_POLICY.md    # Transparent open-source privacy policy
 └── README.md            # Project documentation & build instructions
