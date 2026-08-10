@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="src/assets/icon.png" width="128" height="128" alt="WalkerTracker Logo" />
+</p>
+
 # WalkerTracker 🚶‍♂️🧭
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -11,14 +15,22 @@
 
 ---
 
-## Screenshots 📱
+## App Preview & Screenshots 📱
 
+### App Icon & Splash Screen
 <p align="center">
-  <img src="src/assets/Main%20screen.png" width="30%" alt="Main Map View" />
+  <img src="src/assets/icon.png" width="120" alt="App Icon" />
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="src/assets/splash.png" width="220" alt="Splash Screen" />
+</p>
+
+### Application Interface
+<p align="center">
+  <img src="screens/Main%20screen.png" width="30%" alt="Main Map View" />
   &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="src/assets/Stats.png" width="30%" alt="Statistics & Device Info" />
+  <img src="screens/Stats.png" width="30%" alt="Statistics & Device Info" />
   &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="src/assets/Options.png" width="30%" alt="Settings & Map Downloader" />
+  <img src="screens/Options.png" width="30%" alt="Settings & Map Downloader" />
 </p>
 
 <p align="center">
@@ -45,12 +57,13 @@
 
 ```
 org.walkertracker/
+├── screens/             # UI screenshots (Main screen, Stats, Options)
 ├── src/
 │   ├── main.py          # Main application logic, UI views, sensor fusion, & WMM2025 model
 │   ├── tile_server.py   # Local HTTP tile server for offline maps
 │   ├── downloader.py    # Tile downloader engine
 │   ├── locales.py       # English and Greek translation dictionaries
-│   └── assets/          # App icon, splash image, and UI screenshots
+│   └── assets/          # App icon and splash screen images
 ├── pyproject.toml       # Dependencies, app metadata, and build configuration
 ├── PRIVACY_POLICY.md    # Transparent open-source privacy policy
 └── README.md            # Project documentation & build instructions
