@@ -1,0 +1,52 @@
+[project]
+name = "walkertracker"
+version = "0.1.0"
+description = ""
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Twilight0", email = "twilight0@vivaldi.net" }
+]
+dependencies = [
+    "flet==0.86.1",
+    "flet-geolocator==0.86.1",
+    "flet-map==0.86.1",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "flet-mcp>=0.86.5",
+]
+
+[tool.flet]
+desktop_flavor = "light"    # Change to "full" to use flet-audio and flet-video
+org = "org"
+product = "Walkertracker"
+company = "Flet"
+copyright = "Copyright (C) 2023-2026 by Flet"
+build_number = 2032
+build_version = "0.1.0"
+
+[tool.flet.app]
+path = "src"
+
+[tool.flet.icons]
+android = "src/assets/icon.png"
+splash_android = "src/assets/splash.png"
+
+[tool.flet.splash]
+color = "#34404c"
+dark_color = "#34404c"
+android_gravity = "fill"
+hide_animation = true
+
+[tool.flet.android.permission]
+"android.permission.ACCESS_COARSE_LOCATION" = true
+"android.permission.ACCESS_FINE_LOCATION" = true
+"android.permission.ACCESS_BACKGROUND_LOCATION" = true
+"android.permission.FOREGROUND_SERVICE" = true
+"android.permission.FOREGROUND_SERVICE_LOCATION" = true
+"android.permission.INTERNET" = true
+
+
