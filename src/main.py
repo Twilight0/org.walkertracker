@@ -1668,7 +1668,7 @@ async def main(page: ft.Page):
                                     ft.Text(tr.get("stats_about_header"), size=18, weight=ft.FontWeight.BOLD)
                                 ], spacing=10),
                                 ft.Divider(),
-                                ft.Text(tr.get("stats_app_version", build="2032"), size=14, weight=ft.FontWeight.W_500),
+                                ft.Text(tr.get("stats_app_version", version="1.0.1", build="2"), size=14, weight=ft.FontWeight.W_500),
                                 ft.ElevatedButton(
                                     tr.get("stats_website"),
                                     icon=ft.Icons.LANGUAGE,
@@ -1721,7 +1721,12 @@ async def main(page: ft.Page):
             "👉 **GitHub Repository:** [https://github.com/Twilight0/org.walkertracker](https://github.com/Twilight0/org.walkertracker)"
         )
         def close_dialog(e=None):
+            try:
+                page.pop_dialog()
+            except Exception:
+                pass
             dialog.open = False
+            page.dialog = None
             if dialog in page.overlay:
                 page.overlay.remove(dialog)
             page.update()
@@ -1745,17 +1750,98 @@ async def main(page: ft.Page):
                 ], scroll=ft.ScrollMode.AUTO, expand=True)
             ),
             actions=[
-                ft.TextButton(
+                ft.Button(
                     tr.get("privacy_policy_close"),
                     on_click=close_dialog
                 )
             ]
         )
-        if dialog not in page.overlay:
-            page.overlay.append(dialog)
-        page.dialog = dialog
-        dialog.open = True
-        page.update()
+        try:
+            page.show_dialog(dialog)
+        except Exception:
+            if dialog not in page.overlay:
+                page.overlay.append(dialog)
+            page.dialog = dialog
+            dialog.open = True
+            page.update()
+
+    def open_location_disclosure_dialog(on_agree=None, on_foreground=None, on_deny=None):
+        def close_dialog():
+            try:
+                page.pop_dialog()
+            except Exception:
+                pass
+            dialog.open = False
+            page.dialog = None
+            if dialog in page.overlay:
+                page.overlay.remove(dialog)
+            page.update()
+
+        def handle_agree(e):
+            close_dialog()
+            if on_agree:
+                asyncio.create_task(on_agree())
+
+        def handle_foreground(e):
+            close_dialog()
+            if on_foreground:
+                asyncio.create_task(on_foreground())
+
+        def handle_deny(e):
+            close_dialog()
+            if on_deny:
+                asyncio.create_task(on_deny())
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(ft.Icons.LOCATION_ON, color=ft.Colors.BLUE_400, size=28),
+                ft.Text(tr.get("disclosure_title"), size=18, weight=ft.FontWeight.BOLD, expand=True)
+            ], spacing=10),
+            content=ft.Container(
+                width=450,
+                content=ft.Column([
+                    ft.Text(
+                        tr.get("disclosure_body"),
+                        size=14,
+                        weight=ft.FontWeight.W_400,
+                    ),
+                    ft.Container(height=8),
+                    ft.Text(
+                        tr.get("stats_privacy_policy") + ": https://github.com/Twilight0/org.walkertracker/blob/main/PRIVACY_POLICY.md",
+                        size=12,
+                        color=ft.Colors.GREY_400,
+                        selectable=True
+                    )
+                ], tight=True, spacing=6)
+            ),
+            actions=[
+                ft.TextButton(
+                    tr.get("disclosure_btn_deny"),
+                    on_click=handle_deny
+                ),
+                ft.OutlinedButton(
+                    tr.get("disclosure_btn_foreground"),
+                    on_click=handle_foreground
+                ),
+                ft.ElevatedButton(
+                    tr.get("disclosure_btn_agree"),
+                    icon=ft.Icons.CHECK,
+                    bgcolor=ft.Colors.BLUE_700,
+                    color=ft.Colors.WHITE,
+                    on_click=handle_agree
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END
+        )
+        try:
+            page.show_dialog(dialog)
+        except Exception:
+            if dialog not in page.overlay:
+                page.overlay.append(dialog)
+            page.dialog = dialog
+            dialog.open = True
+            page.update()
 
     async def reset_statistics(e):
         nonlocal step_count
@@ -2163,11 +2249,22 @@ async def main(page: ft.Page):
                         ], spacing=10),
                         ft.Divider(),
                         ft.Text(tr.get("device_integrations_desc"), size=13, color=ft.Colors.GREY_400),
-                        ft.Button(
-                            content=ft.Text(tr.get("app_settings_btn"), weight=ft.FontWeight.BOLD, size=13, text_align=ft.TextAlign.CENTER),
-                            icon=ft.Icons.SETTINGS,
-                            on_click=lambda _: asyncio.create_task(geolocator.open_app_settings())
-                        )
+                        ft.Row([
+                            ft.Button(
+                                content=ft.Text(tr.get("app_settings_btn"), weight=ft.FontWeight.BOLD, size=13, text_align=ft.TextAlign.CENTER),
+                                icon=ft.Icons.SETTINGS,
+                                on_click=lambda _: asyncio.create_task(geolocator.open_app_settings())
+                            ),
+                            ft.OutlinedButton(
+                                content=ft.Text(tr.get("disclosure_title"), weight=ft.FontWeight.BOLD, size=13, text_align=ft.TextAlign.CENTER),
+                                icon=ft.Icons.LOCATION_ON,
+                                on_click=lambda _: open_location_disclosure_dialog(
+                                    on_agree=lambda: perform_permission_request(),
+                                    on_foreground=lambda: perform_permission_request(),
+                                    on_deny=None
+                                )
+                            )
+                        ], wrap=True, spacing=10)
                     ]
                 )
             )
@@ -2496,10 +2593,8 @@ async def main(page: ft.Page):
         # Resolve any ref layouts if needed
         pass
 
-    # Request permission on startup (standard practice)
-    async def request_permissions_startup():
-        # Wait for the app layout to fully mount on the client side
-        await asyncio.sleep(1.0)
+    # Request permission on startup (with Prominent Disclosure requirement)
+    async def perform_permission_request():
         try:
             permission = await geolocator.get_permission_status()
             if permission in (ftg.GeolocatorPermissionStatus.DENIED, ftg.GeolocatorPermissionStatus.UNABLE_TO_DETERMINE):
@@ -2520,6 +2615,37 @@ async def main(page: ft.Page):
                         await redraw_map_view()
                 except Exception:
                     pass
+        except Exception as ex:
+            print(f"Error requesting permission: {ex}")
+
+    async def request_permissions_startup():
+        # Wait for the app layout to fully mount on the client side
+        await asyncio.sleep(1.0)
+        try:
+            # Check if user has answered the prominent location disclosure
+            disclosure_answered = settings.get("location_disclosure_answered", False)
+            if not disclosure_answered:
+                async def on_agree():
+                    save_setting("location_disclosure_answered", True)
+                    save_setting("background_location_enabled", True)
+                    await perform_permission_request()
+
+                async def on_foreground():
+                    save_setting("location_disclosure_answered", True)
+                    save_setting("background_location_enabled", False)
+                    await perform_permission_request()
+
+                async def on_deny():
+                    save_setting("location_disclosure_answered", True)
+                    save_setting("background_location_enabled", False)
+
+                open_location_disclosure_dialog(
+                    on_agree=on_agree,
+                    on_foreground=on_foreground,
+                    on_deny=on_deny
+                )
+            else:
+                await perform_permission_request()
         except Exception as ex:
             print(f"Error checking startup permission: {ex}")
 

@@ -118,11 +118,20 @@ TRANSLATIONS = {
         "step_sensitivity": "Step Sensitivity: {val:.1f} m/s²",
         "step_sensitivity_desc": "Adjust peak threshold. Higher values require stronger motion and reduce false steps.",
         "stats_about_header": "About WalkerTracker",
-        "stats_app_version": "App Version: v0.1.0 (Build {build})",
+        "stats_app_version": "App Version: v{version} (Build {build})",
         "stats_website": "Website & Source Code (GitHub)",
         "stats_privacy_policy": "Privacy Policy",
         "privacy_policy_title": "WalkerTracker Privacy Policy",
-        "privacy_policy_close": "Close"
+        "privacy_policy_close": "Close",
+        "disclosure_title": "Location Access & Background Tracking",
+        "disclosure_body": "WalkerTracker collects location data to enable recording your walking paths, measuring distance, calculating speed, and live GPS map tracking even when the app is closed or not in use.\n\nAll your location data is processed locally on this device and is never shared, sold, or uploaded anywhere.",
+        "disclosure_btn_agree": "Agree & Enable Background",
+        "disclosure_btn_foreground": "Foreground Only",
+        "disclosure_btn_deny": "Not Now",
+        "settings_background_location": "Background Location Tracking",
+        "settings_background_location_desc": "Record walk paths and measure distance even when the screen is turned off or app is closed.",
+        "settings_background_enabled": "Background tracking enabled",
+        "settings_background_disabled": "Foreground tracking only"
     },
     "el": {
         "tab_map": "Χάρτης",
@@ -241,11 +250,20 @@ TRANSLATIONS = {
         "step_sensitivity": "Ευαισθησία Βηματόμετρου: {val:.1f} m/s²",
         "step_sensitivity_desc": "Ρύθμιση κατωφλίου. Υψηλότερες τιμές απαιτούν εντονότερη κίνηση για μείωση λανθασμένων βημάτων.",
         "stats_about_header": "Σχετικά με το WalkerTracker",
-        "stats_app_version": "Έκδοση Εφαρμογής: v0.1.0 (Build {build})",
+        "stats_app_version": "Έκδοση Εφαρμογής: v{version} (Build {build})",
         "stats_website": "Ιστοσελίδα & Πηγαίος Κώδικας (GitHub)",
         "stats_privacy_policy": "Πολιτική Απορρήτου",
         "privacy_policy_title": "Πολιτική Απορρήτου WalkerTracker",
-        "privacy_policy_close": "Κλείσιμο"
+        "privacy_policy_close": "Κλείσιμο",
+        "disclosure_title": "Πρόσβαση Τοποθεσίας & Παρακολούθηση στο Παρασκήνιο",
+        "disclosure_body": "Το WalkerTracker συλλέγει δεδομένα τοποθεσίας για την καταγραφή των περιπάτων σας, τη μέτρηση απόστασης, τον υπολογισμό ταχύτητας και τη ζωντανή πλοήγηση στον χάρτη ακόμη και όταν η εφαρμογή είναι κλειστή ή δεν χρησιμοποιείται.\n\nΌλα τα δεδομένα τοποθεσίας επεξεργάζονται αποκλειστικά τοπικά στη συσκευή σας και δεν διαμοιράζονται, πωλούνται ή μεταφορτώνονται πουθενά.",
+        "disclosure_btn_agree": "Συμφωνώ & Ενεργοποίηση",
+        "disclosure_btn_foreground": "Μόνο στο Προσκήνιο",
+        "disclosure_btn_deny": "Όχι τώρα",
+        "settings_background_location": "Παρακολούθηση Τοποθεσίας στο Παρασκήνιο",
+        "settings_background_location_desc": "Καταγραφή διαδρομών και μέτρηση απόστασης ακόμη και όταν η οθόνη είναι κλειστή.",
+        "settings_background_enabled": "Η παρακολούθηση στο παρασκήνιο είναι ενεργή",
+        "settings_background_disabled": "Παρακολούθηση μόνο στο προσκήνιο"
     }
 }
 

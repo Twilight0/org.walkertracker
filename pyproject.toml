@@ -1,6 +1,6 @@
 [project]
 name = "walkertracker"
-version = "0.1.0"
+version = "1.0.1"
 description = ""
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,10 +23,10 @@ dev = [
 desktop_flavor = "light"    # Change to "full" to use flet-audio and flet-video
 org = "org"
 product = "Walkertracker"
-company = "Flet"
-copyright = "Copyright (C) 2023-2026 by Flet"
-build_number = 2032
-build_version = "0.1.0"
+company = "Home"
+copyright = "Copyright (C) 2026 by Twilight0"
+build_number = 2
+build_version = "1.0.1"
 
 [tool.flet.app]
 path = "src"
