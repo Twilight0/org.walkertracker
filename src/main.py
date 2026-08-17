@@ -988,7 +988,7 @@ async def main(page: ft.Page):
         is_android = (page.platform == ft.PagePlatform.ANDROID) or (page.platform == "android")
         
         while True:
-            if not is_fetching_gps:
+            if geolocator is not None and not is_fetching_gps:
                 is_fetching_gps = True
                 try:
                     # Check permission status first to avoid unnecessary errors
@@ -1843,6 +1843,32 @@ async def main(page: ft.Page):
             dialog.open = True
             page.update()
 
+    async def perform_permission_request():
+        if geolocator is None:
+            return
+        try:
+            permission = await geolocator.get_permission_status()
+            if permission in (ftg.GeolocatorPermissionStatus.DENIED, ftg.GeolocatorPermissionStatus.UNABLE_TO_DETERMINE):
+                permission = await geolocator.request_permission()
+            if permission in (ftg.GeolocatorPermissionStatus.ALWAYS, ftg.GeolocatorPermissionStatus.WHILE_IN_USE):
+                try:
+                    pos = await geolocator.get_current_position()
+                    if pos:
+                        nonlocal current_coords, first_gps_this_session
+                        current_coords = [pos.latitude, pos.longitude]
+                        save_setting("last_lat", pos.latitude)
+                        save_setting("last_lon", pos.longitude)
+                        if first_gps_this_session:
+                            first_gps_this_session = False
+                            await map_widget.move_to(
+                                destination=ftm.MapLatitudeLongitude(pos.latitude, pos.longitude)
+                            )
+                        await redraw_map_view()
+                except Exception:
+                    pass
+        except Exception as ex:
+            print(f"Error requesting permission: {ex}")
+
     async def reset_statistics(e):
         nonlocal step_count
         step_count = 0
@@ -2585,6 +2611,7 @@ async def main(page: ft.Page):
     # Instantiate and configure Geolocator post-mount to avoid pre-mount page.update() crashes
     geolocator = ftg.Geolocator()
     geolocator.configuration = android_config
+    page.services.append(geolocator)
 
     # (Sliders in build_config_view need their value binds linked)
     # The Slider division refs are linked implicitly in Flet
@@ -2592,31 +2619,6 @@ async def main(page: ft.Page):
     for c in page.controls:
         # Resolve any ref layouts if needed
         pass
-
-    # Request permission on startup (with Prominent Disclosure requirement)
-    async def perform_permission_request():
-        try:
-            permission = await geolocator.get_permission_status()
-            if permission in (ftg.GeolocatorPermissionStatus.DENIED, ftg.GeolocatorPermissionStatus.UNABLE_TO_DETERMINE):
-                permission = await geolocator.request_permission()
-            if permission in (ftg.GeolocatorPermissionStatus.ALWAYS, ftg.GeolocatorPermissionStatus.WHILE_IN_USE):
-                try:
-                    pos = await geolocator.get_current_position()
-                    if pos:
-                        nonlocal current_coords, first_gps_this_session
-                        current_coords = [pos.latitude, pos.longitude]
-                        save_setting("last_lat", pos.latitude)
-                        save_setting("last_lon", pos.longitude)
-                        if first_gps_this_session:
-                            first_gps_this_session = False
-                            await map_widget.move_to(
-                                destination=ftm.MapLatitudeLongitude(pos.latitude, pos.longitude)
-                            )
-                        await redraw_map_view()
-                except Exception:
-                    pass
-        except Exception as ex:
-            print(f"Error requesting permission: {ex}")
 
     async def request_permissions_startup():
         # Wait for the app layout to fully mount on the client side
