@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import time
 import math
 import json
 import re
@@ -168,6 +169,7 @@ async def main(page: ft.Page):
     trail_epsilon = max(0.5, min(20.0, float(settings.get("trail_epsilon") or 4.0)))
     compass_offset = max(-180, min(180, int(settings.get("compass_offset") or 0)))
     speed_unit = settings.get("speed_unit") or "kmh"  # kmh, ms, mph
+    smoothing_mode = settings.get("smoothing_mode") or "direct"  # direct, lerp, step_fused
 
     # Configure Android foreground notification for persistent background tracking
     android_config = ftg.GeolocatorAndroidConfiguration(
@@ -196,6 +198,7 @@ async def main(page: ft.Page):
 
     # current_coords for marker: same as initial center
     current_coords = [initial_lat, initial_lon]
+    render_coords = [initial_lat, initial_lon]
     marker_visible = True
     heading = 0.0  # radians
     speed = 0.0    # m/s
@@ -283,8 +286,18 @@ async def main(page: ft.Page):
             return 0.0
 
     # Magnetometer (compass) with Android SensorManager Tilt Compensation & Offline WMM2025 Declination
+    last_mag_time = 0.0
+    last_wmm_declination = 0.0
+    last_wmm_coords = [0.0, 0.0]
+
     def on_mag_reading(e: ft.MagnetometerReadingEvent):
-        nonlocal compass_heading, compass_available, latest_accel
+        nonlocal compass_heading, compass_available, latest_accel, last_mag_time, last_wmm_declination, last_wmm_coords
+        now = time.time()
+        # Cap magnetometer processing and UI updates to 20 FPS (every 50ms)
+        if (now - last_mag_time) < 0.05:
+            return
+        last_mag_time = now
+
         mx, my, mz = e.x, e.y, e.z
         ax, ay, az = latest_accel[0], latest_accel[1], latest_accel[2]
 
@@ -311,17 +324,21 @@ async def main(page: ft.Page):
         if raw_mag_h < 0:
             raw_mag_h += 2 * math.pi
 
-        # Add offline WMM2025 Magnetic Declination (converts Magnetic North to True Geographic North)
-        wmm_dec_deg = get_wmm_declination(current_coords[0], current_coords[1])
-        raw_true_h = (raw_mag_h + math.radians(wmm_dec_deg)) % (2 * math.pi)
+        # Cache WMM Declination (only recalculate when position shifts by >0.05 deg or first run)
+        if abs(current_coords[0] - last_wmm_coords[0]) > 0.05 or abs(current_coords[1] - last_wmm_coords[1]) > 0.05:
+            last_wmm_declination = get_wmm_declination(current_coords[0], current_coords[1])
+            last_wmm_coords = [current_coords[0], current_coords[1]]
+
+        raw_true_h = (raw_mag_h + math.radians(last_wmm_declination)) % (2 * math.pi)
 
         # Apply Low-Pass Filter to eliminate magnetic noise & jitter
-        alpha = 0.60
+        alpha = 0.40
         diff = (raw_true_h - compass_heading + math.pi) % (2 * math.pi) - math.pi
         compass_heading = (compass_heading + alpha * diff) % (2 * math.pi)
 
         compass_available = True
-        update_heading()
+        if current_tab == "map":
+            update_heading()
 
     def on_mag_error(e: ft.SensorErrorEvent):
         nonlocal compass_available
@@ -329,7 +346,7 @@ async def main(page: ft.Page):
 
     # Accelerometer for step detection and tilt compensation
     def on_accel_reading(e: ft.AccelerometerReadingEvent):
-        nonlocal step_count, prev_accel_mag, accel_peak, latest_accel
+        nonlocal step_count, prev_accel_mag, accel_peak, latest_accel, render_coords
         latest_accel = [e.x, e.y, e.z]
 
         mag = math.sqrt(e.x**2 + e.y**2 + e.z**2)
@@ -340,7 +357,24 @@ async def main(page: ft.Page):
             if is_tracking:
                 step_count += 1
                 save_setting("step_count", step_count)
-                asyncio.create_task(redraw_stats_view())
+                if smoothing_mode == "step_fused" and current_tab == "map":
+                    stride = 0.75  # ~0.75m average human walking step
+                    cos_lat = math.cos(math.radians(render_coords[0])) or 0.0001
+                    dlat = stride * math.cos(heading) / 111320.0
+                    dlon = stride * math.sin(heading) / (111320.0 * cos_lat)
+                    render_coords[0] += dlat
+                    render_coords[1] += dlon
+                    lat, lon = render_coords
+                    direction_marker.coordinates = ftm.MapLatitudeLongitude(lat, lon)
+                    try:
+                        if direction_marker.page:
+                            direction_marker.update()
+                        if circle_layer.page:
+                            circle_layer.update()
+                    except Exception:
+                        pass
+                if current_tab == "stats":
+                    asyncio.create_task(redraw_stats_view())
         prev_accel_mag = mag
 
     def on_accel_error(e: ft.SensorErrorEvent):
@@ -365,6 +399,7 @@ async def main(page: ft.Page):
     size_slider_ref = ft.Ref[ft.Slider]()
     size_label_ref = ft.Ref[ft.Text]()
     color_dropdown_ref = ft.Ref[ft.Dropdown]()
+    smoothing_mode_ref = ft.Ref[ft.Dropdown]()
     epsilon_slider_ref = ft.Ref[ft.Slider]()
     epsilon_label_ref = ft.Ref[ft.Text]()
     compass_offset_ref = ft.Ref[ft.Slider]()
@@ -400,12 +435,24 @@ async def main(page: ft.Page):
 
         return f"{lat_deg}°, {lat_min:05.2f}' {lat_dir} - {lon_deg}°, {lon_min:05.2f}' {lon_dir}"
 
-    # Load settings from client storage
-    def save_setting(key, value):
+    # In-memory settings with batched disk flush to avoid UI I/O stalls
+    settings_dirty = False
+
+    def save_setting(key, value, flush=False):
+        nonlocal settings_dirty
         settings[key] = value
+        settings_dirty = True
+        if flush:
+            flush_settings()
+
+    def flush_settings():
+        nonlocal settings_dirty
+        if not settings_dirty:
+            return
         try:
             with open(config_path, "w") as f:
                 json.dump(settings, f)
+            settings_dirty = False
         except Exception:
             pass
 
@@ -667,7 +714,14 @@ async def main(page: ft.Page):
         expand=True
     )
 
-    def _update_info_text():
+    last_info_text_time = 0.0
+
+    def _update_info_text(force=False):
+        nonlocal last_info_text_time
+        now = time.time()
+        if not force and (now - last_info_text_time) < 0.5:
+            return
+        last_info_text_time = now
         try:
             if compass_available:
                 deg = math.degrees(compass_heading + math.radians(compass_offset)) % 360
@@ -686,8 +740,11 @@ async def main(page: ft.Page):
                 s = f"{speed * 2.237:.1f} mph"
             else:
                 s = f"{speed:.1f} m/s"
-            details_info_text.value = f"{s} | {d} | steps: {step_count}"
-            details_info_text.update()
+            new_val = f"{s} | {d} | steps: {step_count}"
+            if details_info_text.value != new_val:
+                details_info_text.value = new_val
+                if details_info_text.page:
+                    details_info_text.update()
         except Exception:
             pass
 
@@ -717,7 +774,8 @@ async def main(page: ft.Page):
         try:
             await map_widget.reset_rotation()
             compass_button.rotate = 0.0
-            compass_button.update()
+            if compass_button.page:
+                compass_button.update()
         except Exception:
             pass
 
@@ -730,19 +788,23 @@ async def main(page: ft.Page):
         except Exception:
             pass
 
+    last_camera_save_time = 0.0
+
     async def handle_map_position_change(e):
-        nonlocal location_visible
+        nonlocal location_visible, last_camera_save_time
         try:
             if e.camera and e.camera.rotation is not None:
                 compass_button.rotate = math.radians(e.camera.rotation)
-                compass_button.update()
+                if compass_button.page:
+                    compass_button.update()
 
-            if e.camera:
+            now = time.time()
+            if e.camera and (now - last_camera_save_time) > 1.5:
+                last_camera_save_time = now
                 save_setting("camera_lat", float(e.camera.center.latitude))
                 save_setting("camera_lon", float(e.camera.center.longitude))
                 save_setting("camera_zoom", float(e.camera.zoom))
                 save_setting("camera_rotation", float(e.camera.rotation))
-                print(f"Saved camera position: {e.camera.center.latitude}, {e.camera.center.longitude} zoom={e.camera.zoom}")
 
             if e.camera and e.coordinates:
                 zoom = e.camera.zoom
@@ -755,7 +817,8 @@ async def main(page: ft.Page):
                 location_visible = dlat < visible_lat and dlon < visible_lon
                 if center_button_ref.current and was_visible != location_visible:
                     center_button_ref.current.visible = not location_visible
-                    center_button_ref.current.update()
+                    if center_button_ref.current.page:
+                        center_button_ref.current.update()
         except Exception as ex:
             print(f"Error in handle_map_position_change: {ex}")
 
@@ -840,9 +903,8 @@ async def main(page: ft.Page):
         heading_arrow.rotate = ft.Rotate(display_heading)
         _update_info_text()
         try:
-            heading_arrow.update()
-            direction_marker.update()
-            marker_layer.update()
+            if heading_arrow.page:
+                heading_arrow.update()
         except Exception:
             pass
 
@@ -922,7 +984,7 @@ async def main(page: ft.Page):
         color_val = ft.Colors.RED if dot_color == "Red" else (
             ft.Colors.GREEN if dot_color == "Green" else ft.Colors.BLUE
         )
-        lat, lon = current_coords
+        lat, lon = render_coords if smoothing_mode in ("lerp", "step_fused") else current_coords
         circle_layer.circles = [
             ftm.CircleMarker(
                 coordinates=ftm.MapLatitudeLongitude(lat, lon),
@@ -937,6 +999,12 @@ async def main(page: ft.Page):
                 color=ft.Colors.WHITE,
             )
         ]
+        direction_marker.coordinates = ftm.MapLatitudeLongitude(lat, lon)
+        try:
+            if direction_marker.page:
+                direction_marker.update()
+        except Exception:
+            pass
 
         # Update Polylines path trail (support disconnected trails)
         use_snapped = snapped_path is not None and map_mode == "online"
@@ -980,11 +1048,78 @@ async def main(page: ft.Page):
 
     # --- TRACKING FUNCTIONS ---
 
+    async def handle_location_update(pos: ftg.GeolocatorPosition):
+        nonlocal current_coords, heading, speed, walk_path, is_tracking, first_gps_this_session, last_known_heading, last_known_speed, gps_dropout_count, render_coords
+        if not pos:
+            return
+        raw_lat, raw_lon = pos.latitude, pos.longitude
+        
+        # Simple soft low-pass filter (90% new, 10% prev) to prevent high-frequency jitter
+        if first_gps_this_session or current_coords == [DEFAULT_LAT, DEFAULT_LON]:
+            lat, lon = raw_lat, raw_lon
+        else:
+            lat = current_coords[0] + 0.90 * (raw_lat - current_coords[0])
+            lon = current_coords[1] + 0.90 * (raw_lon - current_coords[1])
+
+        # Reset dropout counter on successful fix
+        gps_dropout_count = 0
+
+        # Set new coordinate values
+        current_coords = [lat, lon]
+        if smoothing_mode == "direct":
+            render_coords = [lat, lon]
+        elif smoothing_mode == "step_fused":
+            render_coords = [render_coords[0] * 0.25 + lat * 0.75, render_coords[1] * 0.25 + lon * 0.75]
+            
+        save_setting("last_lat", lat)
+        save_setting("last_lon", lon)
+        
+        # Only auto-center map on the very first initial GPS fix
+        if first_gps_this_session:
+            first_gps_this_session = False
+            try:
+                await map_widget.move_to(
+                    destination=ftm.MapLatitudeLongitude(lat, lon)
+                )
+            except Exception:
+                pass
+
+        # Set optional heading / compass angle from GPS Course Over Ground
+        if pos.heading is not None:
+            heading = math.radians(pos.heading)
+            last_known_heading = heading
+        
+        speed = pos.speed or 0.0
+        if speed > 0.1:
+            last_known_speed = speed
+
+        # Record path history and calculate steps from GPS distance when tracking
+        if is_tracking:
+            if not walk_path:
+                walk_path = [[]]
+            if not walk_path[-1]:
+                walk_path[-1].append((lat, lon))
+                save_setting("walk_path", walk_path)
+            else:
+                last_p = walk_path[-1][-1]
+                dx = (lon - last_p[1]) * 40000000 * math.cos(math.radians(last_p[0])) / 360
+                dy = (lat - last_p[0]) * 40000000 / 360
+                seg_dist = math.sqrt(dx * dx + dy * dy)
+                if seg_dist >= 0.8:
+                    walk_path[-1].append((lat, lon))
+                    save_setting("walk_path", walk_path)
+                    step_count += max(1, int(round(seg_dist / 0.75)))
+                    save_setting("step_count", step_count)
+
+        # Redraw Map View Tab & Stats Tab if active
+        await redraw_map_view()
+        await redraw_stats_view()
+
     is_fetching_gps = False
 
     # Location updates polling loop
     async def location_stream_worker():
-        nonlocal current_coords, heading, speed, walk_path, is_tracking, first_gps_this_session, last_known_heading, last_known_speed, gps_dropout_count, step_count, is_fetching_gps
+        nonlocal is_fetching_gps, is_tracking, current_coords, last_known_speed, last_known_heading, gps_dropout_count, walk_path
         is_android = (page.platform == ft.PagePlatform.ANDROID) or (page.platform == "android")
         
         while True:
@@ -994,60 +1129,19 @@ async def main(page: ft.Page):
                     # Check permission status first to avoid unnecessary errors
                     perm = await geolocator.get_permission_status()
                     if perm in (ftg.GeolocatorPermissionStatus.ALWAYS, ftg.GeolocatorPermissionStatus.WHILE_IN_USE):
-                        pos = await asyncio.wait_for(geolocator.get_current_position(), timeout=3.0)
+                        pos = None
+                        # Try fast last-known position or fresh position fix
+                        try:
+                            pos = await asyncio.wait_for(geolocator.get_last_known_position(), timeout=1.0)
+                        except Exception:
+                            pass
+                        if not pos:
+                            try:
+                                pos = await asyncio.wait_for(geolocator.get_current_position(), timeout=8.0)
+                            except Exception:
+                                pass
                         if pos:
-                            raw_lat, raw_lon = pos.latitude, pos.longitude
-                            
-                            # Simple soft low-pass filter (90% new, 10% prev) to prevent high-frequency jitter
-                            if first_gps_this_session or current_coords == [DEFAULT_LAT, DEFAULT_LON]:
-                                lat, lon = raw_lat, raw_lon
-                            else:
-                                lat = current_coords[0] + 0.90 * (raw_lat - current_coords[0])
-                                lon = current_coords[1] + 0.90 * (raw_lon - current_coords[1])
-
-                            # Reset dropout counter on successful fix
-                            gps_dropout_count = 0
-
-                            # Set new coordinate values
-                            current_coords = [lat, lon]
-                            save_setting("last_lat", lat)
-                            save_setting("last_lon", lon)
-                            if location_visible or first_gps_this_session:
-                                first_gps_this_session = False
-                                try:
-                                    await map_widget.move_to(
-                                        destination=ftm.MapLatitudeLongitude(lat, lon)
-                                    )
-                                except Exception:
-                                    pass
-
-                            # Set optional heading / compass angle
-                            if pos.heading is not None:
-                                heading = math.radians(pos.heading)
-                                last_known_heading = heading
-                            
-                            speed = pos.speed or 0.0
-                            if speed > 0.1:
-                                last_known_speed = speed
-
-                            # Record path history when tracking is enabled (regardless of active tab)
-                            if is_tracking:
-                                if not walk_path:
-                                    walk_path = [[]]
-                                if not walk_path[-1]:
-                                    walk_path[-1].append((lat, lon))
-                                    save_setting("walk_path", walk_path)
-                                else:
-                                    last_p = walk_path[-1][-1]
-                                    dx = (lon - last_p[1]) * 40000000 * math.cos(math.radians(last_p[0])) / 360
-                                    dy = (lat - last_p[0]) * 40000000 / 360
-                                    if math.sqrt(dx * dx + dy * dy) >= 0.8:
-                                        walk_path[-1].append((lat, lon))
-                                        save_setting("walk_path", walk_path)
-
-                            # Redraw Map View Tab & Stats Tab if active
-                            await redraw_map_view()
-                            await redraw_stats_view()
+                            await handle_location_update(pos)
                 except Exception as ex:
                     # On Android, dead reckon when GPS drops during active tracking
                     if is_android and is_tracking and last_known_speed > 0.3:
@@ -1107,7 +1201,7 @@ async def main(page: ft.Page):
                     color_val = ft.Colors.RED if dot_color == "Red" else (
                         ft.Colors.GREEN if dot_color == "Green" else ft.Colors.BLUE
                     )
-                    lat, lon = current_coords
+                    lat, lon = render_coords if smoothing_mode in ("lerp", "step_fused") else current_coords
                     circle_layer.circles = [
                         # Pulsating outer indicator circle (pulsates if tracking, static if paused)
                         ftm.CircleMarker(
@@ -1130,13 +1224,52 @@ async def main(page: ft.Page):
                     pass
             await asyncio.sleep(0.5)
 
-
+    # Smooth gliding interpolation loop (for Lerp mode)
+    async def smooth_gliding_worker():
+        nonlocal render_coords
+        while True:
+            if smoothing_mode != "lerp" or current_tab != "map":
+                await asyncio.sleep(0.5)
+                continue
+            await asyncio.sleep(0.04)  # ~25 FPS
+            d_lat = current_coords[0] - render_coords[0]
+            d_lon = current_coords[1] - render_coords[1]
+            dist_sq = d_lat * d_lat + d_lon * d_lon
+            if dist_sq > 1e-12:
+                # Exponential smoothing factor
+                render_coords[0] += d_lat * 0.18
+                render_coords[1] += d_lon * 0.18
+                lat, lon = render_coords
+                direction_marker.coordinates = ftm.MapLatitudeLongitude(lat, lon)
+                color_val = ft.Colors.RED if dot_color == "Red" else (
+                    ft.Colors.GREEN if dot_color == "Green" else ft.Colors.BLUE
+                )
+                circle_layer.circles = [
+                    ftm.CircleMarker(
+                        coordinates=ftm.MapLatitudeLongitude(lat, lon),
+                        radius=dot_size,
+                        color=color_val,
+                        border_color=ft.Colors.WHITE,
+                        border_stroke_width=2
+                    ),
+                    ftm.CircleMarker(
+                        coordinates=ftm.MapLatitudeLongitude(lat, lon),
+                        radius=6,
+                        color=ft.Colors.WHITE,
+                    )
+                ]
+                try:
+                    if direction_marker.page:
+                        direction_marker.update()
+                    if circle_layer.page:
+                        circle_layer.update()
+                except Exception:
+                    pass
 
     # Redraw map tab view
     async def redraw_map_view():
         if current_tab == "map" and map_container_ref.current:
             update_map_view_state()
-            page.update()
 
     # Triggered when Start/Stop tracking button is pressed
     async def toggle_tracking(e):
@@ -1421,8 +1554,38 @@ async def main(page: ft.Page):
                 )
             page.update()
 
+    cached_storage_str = "0.0 MB"
+    cached_tiles_count = 0
+    cached_maps_count = 0
+    stats_cache_dirty = True
+
+    def refresh_disk_stats_cache():
+        nonlocal cached_storage_str, cached_tiles_count, cached_maps_count, stats_cache_dirty
+        total_bytes = 0
+        total_tiles = 0
+        if os.path.exists(maps_root):
+            for root, dirs, files in os.walk(maps_root):
+                for f in files:
+                    if f.endswith(".png"):
+                        total_tiles += 1
+                        try:
+                            total_bytes += os.path.getsize(os.path.join(root, f))
+                        except Exception:
+                            pass
+        if total_bytes < 1024 * 1024:
+            cached_storage_str = f"{total_bytes / 1024:.1f} KB"
+        elif total_bytes < 1024 * 1024 * 1024:
+            cached_storage_str = f"{total_bytes / (1024 * 1024):.1f} MB"
+        else:
+            cached_storage_str = f"{total_bytes / (1024 * 1024 * 1024):.2f} GB"
+        cached_tiles_count = total_tiles
+        cached_maps_count = len(get_downloaded_maps())
+        stats_cache_dirty = False
+
     def update_stats_data():
-        tiles = count_offline_tiles()
+        if stats_cache_dirty:
+            refresh_disk_stats_cache()
+        tiles = cached_tiles_count
         sessions = count_sessions()
         dist = 0.0
         for segment in walk_path:
@@ -1444,7 +1607,7 @@ async def main(page: ft.Page):
         else:
             mode_text = tr.get("mode_offline", name=selected_map if selected_map else "Local Cache")
 
-        storage_str = get_map_storage_size_mb()
+        storage_str = cached_storage_str
 
         if stats_loc_ref.current:
             stats_loc_ref.current.value = loc_str
@@ -1465,14 +1628,14 @@ async def main(page: ft.Page):
             stats_tiles_ref.current.value = tr.get("stats_cached_tiles", tiles=tiles)
             stats_tiles_ref.current.update()
         if stats_maps_ref.current:
-            stats_maps_ref.current.value = tr.get("stats_downloaded_regions", count=len(get_downloaded_maps()))
+            stats_maps_ref.current.value = tr.get("stats_downloaded_regions", count=cached_maps_count)
             stats_maps_ref.current.update()
         if stats_storage_ref.current:
             stats_storage_ref.current.value = tr.get("stats_storage_usage", size=storage_str)
             stats_storage_ref.current.update()
 
     async def redraw_stats_view():
-        if stats_container_ref.current:
+        if current_tab == "stats" and stats_container_ref.current:
             if not isinstance(stats_container_ref.current.content, ft.ListView):
                 try:
                     stats_container_ref.current.content = build_stats_view()
@@ -1487,30 +1650,10 @@ async def main(page: ft.Page):
                 update_stats_data()
 
     def get_map_storage_size_mb():
-        total_bytes = 0
-        if os.path.exists(maps_root):
-            for root, dirs, files in os.walk(maps_root):
-                for f in files:
-                    try:
-                        total_bytes += os.path.getsize(os.path.join(root, f))
-                    except Exception:
-                        pass
-        if total_bytes < 1024 * 1024:
-            return f"{total_bytes / 1024:.1f} KB"
-        elif total_bytes < 1024 * 1024 * 1024:
-            return f"{total_bytes / (1024 * 1024):.1f} MB"
-        else:
-            return f"{total_bytes / (1024 * 1024 * 1024):.2f} GB"
+        return cached_storage_str
 
     def count_offline_tiles():
-        total = 0
-        if not os.path.exists(maps_root):
-            return 0
-        for root, dirs, files in os.walk(maps_root):
-            for f in files:
-                if f.endswith(".png"):
-                    total += 1
-        return total
+        return cached_tiles_count
 
     def count_sessions():
         count = 0
@@ -1885,17 +2028,19 @@ async def main(page: ft.Page):
     DEFAULT_TRACKING_INTERVAL = 5
     DEFAULT_DOT_SIZE = 16
     DEFAULT_DOT_COLOR = "Red"
+    DEFAULT_SMOOTHING_MODE = "direct"
     DEFAULT_TRAIL_EPSILON = 2.0
     DEFAULT_COMPASS_OFFSET = 0
 
     async def reset_to_defaults(e):
-        nonlocal tracking_interval, dot_size, dot_color, trail_epsilon, compass_offset, speed_unit, language_override, language_changed_this_session, map_mode, selected_map
+        nonlocal tracking_interval, dot_size, dot_color, smoothing_mode, trail_epsilon, compass_offset, speed_unit, language_override, language_changed_this_session, map_mode, selected_map
 
         old_map_mode = map_mode
 
         tracking_interval = DEFAULT_TRACKING_INTERVAL
         dot_size = DEFAULT_DOT_SIZE
         dot_color = DEFAULT_DOT_COLOR
+        smoothing_mode = DEFAULT_SMOOTHING_MODE
         trail_epsilon = DEFAULT_TRAIL_EPSILON
         compass_offset = DEFAULT_COMPASS_OFFSET
         speed_unit = "kmh"
@@ -1906,6 +2051,7 @@ async def main(page: ft.Page):
         save_setting("tracking_interval", tracking_interval)
         save_setting("dot_size", dot_size)
         save_setting("dot_color", dot_color)
+        save_setting("smoothing_mode", smoothing_mode)
         save_setting("trail_epsilon", trail_epsilon)
         save_setting("compass_offset", compass_offset)
         save_setting("speed_unit", speed_unit)
@@ -1930,6 +2076,10 @@ async def main(page: ft.Page):
         if color_dropdown_ref.current:
             color_dropdown_ref.current.value = DEFAULT_DOT_COLOR
             color_dropdown_ref.current.update()
+
+        if smoothing_mode_ref.current:
+            smoothing_mode_ref.current.value = DEFAULT_SMOOTHING_MODE
+            smoothing_mode_ref.current.update()
 
         if epsilon_slider_ref.current:
             epsilon_slider_ref.current.value = DEFAULT_TRAIL_EPSILON
@@ -2049,13 +2199,15 @@ async def main(page: ft.Page):
 
     # Callback when settings sliders change
     async def on_settings_changed(e):
-        nonlocal tracking_interval, dot_size, dot_color, trail_epsilon, compass_offset
+        nonlocal tracking_interval, dot_size, dot_color, smoothing_mode, trail_epsilon, compass_offset, speed_unit
         if interval_slider_ref.current:
             tracking_interval = int(interval_slider_ref.current.value)
         if size_slider_ref.current:
             dot_size = int(size_slider_ref.current.value)
         if color_dropdown_ref.current:
             dot_color = color_dropdown_ref.current.value
+        if smoothing_mode_ref.current:
+            smoothing_mode = smoothing_mode_ref.current.value or "direct"
         if epsilon_slider_ref.current:
             trail_epsilon = round(epsilon_slider_ref.current.value, 1)
         if compass_offset_ref.current:
@@ -2073,6 +2225,7 @@ async def main(page: ft.Page):
         save_setting("tracking_interval", tracking_interval)
         save_setting("dot_size", dot_size)
         save_setting("dot_color", dot_color)
+        save_setting("smoothing_mode", smoothing_mode)
         save_setting("trail_epsilon", trail_epsilon)
         save_setting("compass_offset", compass_offset)
         save_setting("speed_unit", speed_unit)
@@ -2240,6 +2393,13 @@ async def main(page: ft.Page):
                             ft.dropdown.Option(key="Red", text=tr.get("color_red")),
                             ft.dropdown.Option(key="Green", text=tr.get("color_green")),
                             ft.dropdown.Option(key="Blue", text=tr.get("color_blue"))
+                        ], on_select=on_settings_changed),
+                        ft.Text(tr.get("smoothing_mode"), weight=ft.FontWeight.BOLD),
+                        ft.Text(tr.get("smoothing_mode_desc"), size=11, color=ft.Colors.GREY_400),
+                        ft.Dropdown(ref=smoothing_mode_ref, value=smoothing_mode, options=[
+                            ft.dropdown.Option(key="direct", text=tr.get("smoothing_direct")),
+                            ft.dropdown.Option(key="lerp", text=tr.get("smoothing_lerp")),
+                            ft.dropdown.Option(key="step_fused", text=tr.get("smoothing_step_fused"))
                         ], on_select=on_settings_changed),
                         ft.Text(tr.get("trail_smoothing", eps=trail_epsilon), weight=ft.FontWeight.BOLD, ref=epsilon_label_ref),
                         ft.Text(tr.get("trail_smoothing_desc"), size=11, color=ft.Colors.GREY_400),
@@ -2578,11 +2738,12 @@ async def main(page: ft.Page):
         )
     )
 
-    # Register Magnetometer post-mount (no custom interval — use system default)
+    # Register Magnetometer with native hardware interval (100ms / 10 Hz) for smooth compass arrow rotation
     if page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
         try:
             magnetometer = ft.Magnetometer(
                 enabled=True,
+                interval=ft.Duration(milliseconds=100),
                 on_reading=on_mag_reading,
                 on_error=on_mag_error,
             )
@@ -2590,26 +2751,14 @@ async def main(page: ft.Page):
         except Exception:
             pass
 
-    # Register Accelerometer for step detection
-    if page.platform in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
-        try:
-            accelerometer = ft.Accelerometer(
-                enabled=True,
-                on_reading=on_accel_reading,
-                on_error=on_accel_error,
-            )
-            page.services.append(accelerometer)
-        except Exception:
-            pass
-
-    # Mock compass data for local PC testing
-    if page.platform not in (ft.PagePlatform.ANDROID, ft.PagePlatform.IOS):
-        compass_available = True
-        compass_heading = math.radians(45)
-        update_heading()
-
     # Instantiate and configure Geolocator post-mount to avoid pre-mount page.update() crashes
-    geolocator = ftg.Geolocator()
+    def on_geolocator_position_change(e: ftg.GeolocatorPositionChangeEvent):
+        if e.position:
+            asyncio.create_task(handle_location_update(e.position))
+
+    geolocator = ftg.Geolocator(
+        on_position_change=on_geolocator_position_change
+    )
     geolocator.configuration = android_config
     page.services.append(geolocator)
 
@@ -2654,6 +2803,12 @@ async def main(page: ft.Page):
     # Launch startup permission checks
     asyncio.create_task(request_permissions_startup())
 
+    # Periodic settings flush worker (debounced disk I/O)
+    async def settings_flush_worker():
+        while True:
+            await asyncio.sleep(10.0)
+            flush_settings()
+
     # Backup save on disconnect (main save happens in handle_map_position_change)
     async def on_app_close(e):
         try:
@@ -2663,12 +2818,14 @@ async def main(page: ft.Page):
         except Exception:
             pass
         save_setting("step_count", step_count)
+        flush_settings()
 
     page.on_disconnect = lambda e: asyncio.create_task(on_app_close(e))
 
     # Start background poller tasks
     gps_task = asyncio.create_task(location_stream_worker())
-    blink_task = asyncio.create_task(blink_worker())
+    smooth_task = asyncio.create_task(smooth_gliding_worker())
+    flush_task = asyncio.create_task(settings_flush_worker())
 
 # Run Flet Application
 if __name__ == "__main__":
